@@ -42,6 +42,8 @@ RecordType = Enum(Bytes("RecordType", 4),
         lsvP = 'lsvP',
         modD = 'modD', # dutc, directories only - modification date
         moDD = 'moDD', # dutc, directories only - modification date
+        pBB0 = 'pBB0', # blob
+        pBBk = 'pBBk', # blob, something to do with bookmarks
         phyS = 'phyS',
         ph1S = 'ph1S',
         pict = 'pict',
@@ -68,7 +70,7 @@ typeData = Struct("typeData",
         )
 ustrData = Struct("ustrData",
         UBInt32("Length"),
-        Bytes("Data", lambda env:env.Length * 2)
+        String("Data", lambda env:env.Length * 2, encoding="utf_16_be")
         )
 compData = Struct("compData",
         UBInt64("Value")
@@ -98,7 +100,7 @@ DataType = Enum(Bytes("DataType", 4),
 
 Record = Struct("Record",
         UBInt32("FilenameLength"), # Filename length, in characters, as an integer
-        Bytes("Filename", lambda env:env.FilenameLength), # Filename, in big-endian UTF-16
+        String("Filename", lambda env:env.FilenameLength * 2, encoding="utf_16_be"), # Filename, in big-endian UTF-16
         RecordType, # a FourCharCode indicating what property of the file this entry describes
         DataType, # What kind of data field follows
         Switch("RecordData", lambda env: env.RecordType,
@@ -158,6 +160,8 @@ Record = Struct("Record",
                 'lsvP': blobData, # Same as lsvp, but with dictionary for `columns` instead of array
                 'modD': dutcData, # dutc, directories only - modification date
                 'moDD': dutcData, # dutc, directories only - modification date
+                'pBB0': blobData, # blob, something to do with app-sandbox.read-write
+                'pBBk': blobData, # blob, something to do with bookmarks
                 'phyS': compData, # comp, a multiple of 8192, and slightly larger than logS.  Presumably the physical size
                 'ph1S': compData, # see phyS
                 'pict': blobData, # variable length blob, dirs only.  Alias
@@ -203,22 +207,34 @@ BuddyDirEnt = Struct("BuddyDirEnt",
         UBInt32("BlockNumber"),
         )
 
-BTreeRoot = Struct("BTreeRoot",
+InternalNodeData = Struct("InternalNodeData",
+        UBInt32("ChildBlockNumber"),
+        Record
+        )
+
+BTreeNode = Struct("BTreeNode",
+        UBInt32("P"), # if 0, leaf node, if nonzero, BlockNumber at the end of the list
+        UBInt32("Count"),
+        # TODO finish this
+        #Probe(),
+        Switch("BlockData", lambda env: env.P == 0, {
+                    True: Array(lambda env:env.Count, Record), # leaf node
+                    False: Array(lambda env:env.Count, InternalNodeData),
+                    }
+              )
+        )
+
+BTreeMetadata = Struct("BTreeMetadata",
         UBInt32("RootBlockNumber"), # the block number of the root node of the B-tree
         UBInt32("NumLevels"), # Tree height minus one - for a tree with a single, leaf node, this is 0
         UBInt32("NumRecords"), # Number of records in the tree
         UBInt32("NumNodes"), # Number of nodes in this tree, not counting this header block
         UBInt32("PageSize"), # Always 4096.
+        # Deref the root node
+        Pointer(lambda env: env._._.ArenaOffset + offsetFromAddress(env._.BlockAddresses[env.RootBlockNumber]) , BTreeNode)
         )
 
-BTreeNode = Struct("BTreeNode",
-        UBInt32("P"), # if 0, leaf node, 
-        UBInt32("Count"),
-        # Switch(   lambda env: env.P == 0, {
-        #         True: Array("# leaf node
-        )
-
-BuddyAllocatorBlock = Struct("BuddyAllocatorBlock",
+BuddyAllocatorMetadata = Struct("BuddyAllocatorMetadata",
         UBInt32("NumBlocks"), # The number of blocks in the allocated-blocks list
         UBInt32("Zeros"),     # Always zero.
         Array(lambda env:roundUpToNearest256(env.NumBlocks), UBInt32("BlockAddresses")), # Block addresses.
@@ -226,8 +242,15 @@ BuddyAllocatorBlock = Struct("BuddyAllocatorBlock",
         # unassigned block numbers represented by zeroes. This is followed by
         # enough zeroes to round the section up to the next multiple of 256
         # entries (1024 bytes).
+
+        # A directory that always appears to have exactly one entry: "DSDB"
         UBInt32("DirectoryCount"),
         Array(lambda env:env.DirectoryCount, BuddyDirEnt),
+
+        # DSDB is a pointer to the BTreeMetadata
+        Pointer(lambda env: env._.ArenaOffset + offsetFromAddress(env.BlockAddresses[next((x.BlockNumber for x in env.BuddyDirEnt if x.Name == "DSDB"))]), BTreeMetadata),
+
+        # Freelist
         Array(32, FreeList)
         # TODO: add an Array of Pointers to other BuddyBlocks based on NumBlocks and the BlockAddresses?
         )
@@ -251,8 +274,27 @@ DSStoreFile = Struct("DSStoreFile",
         UBInt32("FixedHeader"), # 0x00000001
         Anchor("ArenaOffset"),
         BuddyAllocatorHeader,
-        Pointer(lambda ctx:ctx.BuddyAllocatorHeader.InfoBlockOffset + ctx.ArenaOffset, BuddyAllocatorBlock)
+        Pointer(lambda env:env.BuddyAllocatorHeader.InfoBlockOffset + env.ArenaOffset, BuddyAllocatorMetadata)
         )
+
+def analyze_freelist(freelist):
+    ranges = []
+    for x in xrange(len(freelist)):
+        size = 2 ** x
+        for offset in freelist[x].Offset:
+            ranges.append((offset, offset + size))
+    ranges.sort()
+    i = 0
+    while i < len(ranges) - 1:
+        if ranges[i][1] == ranges[i+1][0]:
+            merged = (ranges[i][0], ranges[i+1][1])
+            del ranges[i]
+            ranges[i] = merged
+        else:
+            i += 1
+    print "Free ranges:"
+    for r in ranges:
+        print r
 
 if __name__ == "__main__":
     path = os.path.expanduser("~/.DS_Store")
@@ -261,4 +303,7 @@ if __name__ == "__main__":
     with open(path) as f:
         buf = f.read()
     ds_store = DSStoreFile.parse(buf)
-    print ds_store
+    print ds_store.BuddyAllocatorMetadata.BTreeMetadata
+    #freelist = ds_store.BuddyAllocatorMetadata.FreeList
+    #analyze_freelist(freelist)
+
