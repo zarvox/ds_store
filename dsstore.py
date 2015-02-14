@@ -27,6 +27,7 @@ RecordType = Enum(Bytes("RecordType", 4),
         fwsw = 'fwsw',
         fwvh = 'fwvh',
         GRP0 = 'GRP0', # ustr.  unknown.
+        icnv = 'icnv', # Unknown, seen in LOVE's DS_Store
         icgo = 'icgo', # 8-byte blob, directories (and files?). Unknown. Probably two integers, and often the value 00 00 00 00 00 00 00 04.
         icsp = 'icsp', # 8-byte blob, directories only. Unknown, usually all but the last two bytes are zeroes.
         icvo = 'icvo', #

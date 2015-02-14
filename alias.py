@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-from construct import Enum, UBInt16, Bytes, Struct, RepeatUntil, UBInt32, UBInt8, Anchor
+from construct import Adapter, Anchor, Bytes, Enum, RepeatUntil, String, Struct, Switch, UBInt32, UBInt16, UBInt8
 
 # This file contains some structures relating to Alias records.
 # http://en.wikipedia.org/wiki/Alias_(Mac_OS)#File_structure
@@ -14,12 +14,12 @@ AliasType = Enum(UBInt16("AliasType"),
         DRIVER_NAME = 6,
         REVISED_APPLESHARE_INFO = 9,
         APPLEREMOTEACCESS_DIALUP_INFO = 10,
-        UNK0 = 14,
-        UNK1 = 15,
+        FILENAME_UTF16 = 14,
+        VOLUMENAME_UTF16 = 15,
         UNK2 = 16,
         UNK3 = 17,
-        UNK4 = 18,
-        UNK5 = 19,
+        VOLUME_RELATIVE_PATH = 18,
+        VOLUME_MOUNTPOINT_UTF8 = 19, # appears to be a null-terminated volume path
         UNK6 = 20,
         END_OF_LIST = 0xffff,
         )
@@ -41,9 +41,44 @@ VolumeType = Enum(UBInt16("VolumeType"),
 def roundUpToNearest2(x):
     return x if x % 2 == 0 else x + 1
 
+AliasString = Struct("AliasString",
+        UBInt16("Length"),
+        String("Data", lambda env:env.Length * 2, encoding="utf_16_be")
+        )
+
+def AliasItem():
+    return AliasBlobAdapter(
+            AliasBlob
+            )
+
+class AliasBlobAdapter(Adapter):
+    def __init__(self, subcon):
+        Adapter.__init__(self, subcon)
+    def _encode(self, obj, context):
+        print "_encode:", obj.AliasType
+        return obj
+    def _decode(self, obj, context):
+        def decodeUTF16(obj, context):
+            obj.DataAsString = AliasString.parse(obj.AliasData)
+            return obj
+
+        def passthrough(obj, context):
+            return obj
+
+        actions = {
+                "FILENAME_UTF16": decodeUTF16,
+                "VOLUMENAME_UTF16": decodeUTF16,
+        }
+
+        action = actions.get(obj.AliasType, passthrough)
+        return action(obj, context)
+
 AliasBlob = Struct("AliasBlob",
         AliasType,
         UBInt16("AliasLength"),
+#        Switch("AliasData", lambda env: env.AliasType,
+#            {
+#            }),
         Bytes("AliasData", lambda env: roundUpToNearest2(env.AliasLength))
         )
 
@@ -76,7 +111,7 @@ AliasRecord = Struct("AliasRecord",
         UBInt16("VolumeFSID"),      # volume filesystem id
         Bytes("Reserved", 10),      # zeros
 #        Array(11, AliasBlob),
-        RepeatUntil(lambda obj, env: obj.AliasType == "END_OF_LIST", AliasBlob),
+        RepeatUntil(lambda obj, env: obj.AliasType == "END_OF_LIST", AliasItem()),
         Anchor("DataBegin"),
         Bytes("AliasData", lambda env: env.AliasSize - env.DataBegin) # The alias record data
         )
