@@ -226,6 +226,18 @@ InternalNodeData = Struct("InternalNodeData",
         Record
         )
 
+def InternalNodeContents(count):
+    return Struct("InternalNodeData",
+            Array(lambda env: count - 1, InternalNodeData),
+            UBInt32("LastChildBlockNumber")
+            )
+
+def BTreeBlockData(env):
+    if env.P == 0:
+        return Array(lambda env:env.Count, Record)
+    else:
+        return InternalNodeContents(env.Count)
+
 BTreeNode = Struct("BTreeNode",
         UBInt32("P"), # if 0, leaf node, if nonzero, BlockNumber at the end of the list
         UBInt32("Count"),
@@ -233,7 +245,7 @@ BTreeNode = Struct("BTreeNode",
         #Probe(),
         Switch("BlockData", lambda env: env.P == 0, {
                     True: Array(lambda env:env.Count, Record), # leaf node
-                    False: Array(lambda env:env.Count, InternalNodeData),
+                    False: lambda env: InternalNodeContents(env.Count),
                     }
               )
         )

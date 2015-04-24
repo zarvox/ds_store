@@ -39,6 +39,8 @@ if __name__ == "__main__":
     aliasrecorddata = [ entry.RecordData for entry in ds_store.BuddyAllocatorMetadata.BTreeMetadata.BTreeNode.BlockData if entry.RecordType == 'icvp' ][0]['backgroundImageAlias']
     aliasrecord = AliasRecord.parse(aliasrecorddata)
     print aliasrecord
+    for block in aliasrecord.AliasBlob:
+        print block
     #freelist = ds_store.BuddyAllocatorMetadata.FreeList
     #analyze_freelist(freelist)
 
